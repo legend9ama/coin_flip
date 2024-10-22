@@ -79,3 +79,22 @@ button:hover {
 #start-button:hover {
     background-color: #218838; /* Darker shade on hover */
 }
+
+/* Play Again Button Styles */
+#play-again-button {
+    padding: 10px 20px; /* Padding for the play again button */
+    font-size: 16px; /* Font size for play again button */
+    cursor: pointer; /* Pointer cursor on hover */
+    border: none; /* Remove default border */
+    border-radius: 5px; /* Rounded corners */
+    background-color: #007bff; /* Primary button color */
+    color: white; /* Text color */
+    transition: background-color 0.3s; /* Transition for background color */
+    display: block; /* Make it a block element for centering */
+    margin: 20px auto; /* Center the play again button with margin */
+}
+
+/* Play Again Button Hover Effect */
+#play-again-button:hover {
+    background-color: #0056b3; /* Darker shade on hover */
+}
