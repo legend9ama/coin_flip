@@ -120,11 +120,10 @@ async function showResult() {
     messageDisplay.textContent = '';
     
 
-    // Prepare for fade-in
-    coinDisplay.style.opacity = 0; // Start with opacity 0 for fade-in
-    await delay(500); // Delay to ensure the image is set before fading in
-    coinDisplay.style.transition = 'opacity 0.5s ease'; // Smooth transition for fading
+    await fadeOutCoin(); // Fade out the coin
+    await delay(500);
     coinDisplay.src = coinState === 'Heads' ? 'images/coin_heads.png' : 'images/coin_tails.png'; // Show final coin state
+    coinDisplay.style.transition = 'opacity 0.5s ease'; // Smooth transition for fading
     coinDisplay.style.opacity = 1; // Fade in the coin
     // Determine the winner based on the final coin state
     const playerWins = coinState === 'Tails'; // Player wins if the coin is Tails
