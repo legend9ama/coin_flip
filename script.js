@@ -140,7 +140,7 @@ async function showResult() {
 }
 async function sendGameResult(playerWins, computerWins) {
     try {
-        const response = await fetch('https://coin-flip-backend-647009581501.europe-north1.run.app', {
+        const response = await fetch('https://coin-flip-backend-xgxdq6sujq-lz.a.run.app/game', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
