@@ -46,7 +46,7 @@ async function startGame() {
 
     // First turn: Computer's choice
     messageDisplay.textContent = "Computer is thinking...";
-    await delay(3000); // Computer thinking delay
+    await delay(2000); // Computer thinking delay
     computerChoice1 = Math.random() < 0.5 ? 'Flip' : 'Don\'t Flip'; // Random choice
 
     // Apply computer's first choice
@@ -64,7 +64,7 @@ async function startGame() {
 
     // Second round: Computer's second turn
     messageDisplay.textContent = "Computer is thinking...";
-    await delay(3000); // Computer thinking delay
+    await delay(2000); // Computer thinking delay
     computerChoice2 = Math.random() < 0.5 ? 'Flip' : 'Don\'t Flip'; // Random choice
 
     // Apply computer's second choice
