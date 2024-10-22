@@ -1,0 +1,81 @@
+/* General Styles */
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    height: 100vh; /* Full height of the viewport */
+    margin: 0;
+    background-color: #f0f0f0; /* Light background color */
+    font-family: Arial, sans-serif; /* Font style for the text */
+}
+
+/* Game Container */
+#game-container {
+    text-align: center; /* Center text */
+}
+
+/* Coin Display */
+#coin-display {
+    width: 285px; /* Adjust size as needed */
+    height: auto; /* Maintain aspect ratio */
+    transition: opacity 0.5s ease; /* Smooth transition for hiding */
+    margin: 20px 0; /* Add spacing above and below the coin */
+}
+
+/* Player Choices Container */
+#player-choices {
+    margin-top: 10px; /* Spacing above choices */
+    display: flex; /* Use flex to center the buttons */
+    justify-content: center; /* Center the buttons */
+}
+
+/* Button Styles */
+button {
+    margin: 5px; /* Spacing between buttons */
+    padding: 10px 20px; /* Padding for buttons */
+    font-size: 16px; /* Font size for buttons */
+    cursor: pointer; /* Pointer cursor on hover */
+    border: none; /* Remove default border */
+    border-radius: 5px; /* Rounded corners */
+    background-color: #007bff; /* Primary button color */
+    color: white; /* Text color */
+    transition: background-color 0.3s; /* Transition for background color */
+}
+
+/* Button Hover Effect */
+button:hover {
+    background-color: #0056b3; /* Darker shade on hover */
+}
+
+/* Result and Message Display */
+#result {
+    margin-top: 20px; /* Spacing above result text */
+    font-size: 24px; /* Font size for result text */
+    font-weight: bold; /* Bold text */
+}
+
+#message {
+    margin-top: 10px; /* Spacing above message text */
+    font-size: 18px; /* Font size for message text */
+    color: #333; /* Darker text color */
+}
+
+/* Start Button */
+#start-button {
+    padding: 10px 20px; /* Padding for the start button */
+    font-size: 16px; /* Font size for start button */
+    cursor: pointer; /* Pointer cursor on hover */
+    border: none; /* Remove default border */
+    border-radius: 5px; /* Rounded corners */
+    background-color: #28a745; /* Green button color */
+    color: white; /* Text color */
+    transition: background-color 0.3s; /* Transition for background color */
+    display: block; /* Make it a block element for centering */
+    margin: 20px auto; /* Center the start button with margin */
+}
+
+/* Start Button Hover Effect */
+#start-button:hover {
+    background-color: #218838; /* Darker shade on hover */
+}

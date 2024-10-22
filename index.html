@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css"> <!-- Link to your CSS -->
+    <title>Coin Flip Game</title>
+</head>
+<body>
+    <div id="game-container">
+        <img id="coin-display" src="images/coin_heads.png" alt="Coin"> <!-- Start visible -->
+        <div id="message"></div>
+        <div id="player-choices" style="display: none;"> <!-- Initially hidden -->
+            <button id="flip-button">Flip</button>
+            <button id="dont-flip-button">Don't Flip</button>
+        </div>
+        <button id="start-button">Start Game</button>
+        <div id="result"></div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
