@@ -1,0 +1,206 @@
+#include <avr/io.h>
+#include <avr/interrupt.h>
+
+// Pin configuration
+#define LASER_PIN PD6     // PD6 (Digital 6) - Laser output
+#define SIGNAL_PIN PD2    // PD2 (Digital 2) - Digital signal input (INT0)
+
+// FSK Frequencies (100Hz, 200Hz, 400Hz)
+#define FSK_LOW_FREQ 100     // Hz (bit 00)
+#define FSK_MID_FREQ 200     // Hz (bit 01) 
+#define FSK_HIGH_FREQ 400    // Hz (bit 10)
+#define FSK_SYNC_FREQ 50     // Hz (synchronization)
+#define BAUD_RATE 1200       // bits per second (higher with faster frequencies)
+
+// FSK Protocol
+#define SYNC_BYTE 0xAA
+#define START_BYTE 0x7E
+#define STOP_BYTE 0x7F
+
+// Global variables
+volatile uint32_t pulse_times[8] = {0};  // Increased buffer for faster sampling
+volatile uint8_t pulse_index = 0;
+volatile uint32_t current_time = 0;      // 1 unit = 1ms
+volatile uint8_t signal_detected = 0;
+volatile uint8_t synchronized = 0;
+volatile uint16_t measured_frequency = 0;
+volatile uint8_t debug_enabled = 1;
+
+// FSK Reception variables
+volatile uint8_t receiving_data = 0;
+volatile uint8_t receiving_byte = 0;
+volatile uint8_t bit_position = 0;
+volatile uint8_t received_bytes[32];
+volatile uint8_t rx_index = 0;
+volatile uint32_t last_edge_time = 0;
+volatile uint16_t recent_periods[8] = {0};  // More samples for accurate measurement
+volatile uint8_t period_index = 0;
+
+// FSK Transmission variables
+volatile uint8_t transmission_active = 0;
+volatile uint8_t transmit_buffer[32];
+volatile uint8_t tx_index = 0;
+volatile uint8_t tx_length = 0;
+volatile uint8_t current_bit = 0;
+volatile uint32_t bit_start_time = 0;
+volatile uint8_t current_fsk_state = 0;
+
+// UART functions
+void uart_init(void) {
+    UBRR0H = 0;
+    UBRR0L = 103; // 9600 baud at 16MHz
+    UCSR0B = (1 << TXEN0) | (1 << RXEN0);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
+
+void uart_putchar(char c) {
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = c;
+}
+
+void uart_print(const char* str) {
+    while (*str) {
+        uart_putchar(*str++);
+    }
+}
+
+void uart_println(const char* str) {
+    uart_print(str);
+    uart_putchar('\r');
+    uart_putchar('\n');
+}
+
+void uart_print_hex(uint8_t num) {
+    char hex_chars[] = "0123456789ABCDEF";
+    uart_putchar(hex_chars[(num >> 4) & 0x0F]);
+    uart_putchar(hex_chars[num & 0x0F]);
+}
+
+void uart_print_number(uint16_t num) {
+    char buffer[6];
+    uint8_t i = 0;
+    
+    if (num == 0) {
+        uart_putchar('0');
+        return;
+    }
+    
+    while (num > 0) {
+        buffer[i++] = '0' + (num % 10);
+        num /= 10;
+    }
+    
+    while (i > 0) {
+        uart_putchar(buffer[--i]);
+    }
+}
+
+// Timer0 initialization for system time (1ms resolution)
+void timer0_init(void) {
+    TCCR0A = (1 << WGM01); // CTC mode
+    TCCR0B = (1 << CS01) | (1 << CS00); // Prescaler 64
+    OCR0A = 249; // 1ms at 16MHz (16000000/64/250 = 1000Hz)
+    TIMSK0 = (1 << OCIE0A);
+}
+
+// Timer1 initialization for FSK generation (100-400Hz range)
+void timer1_init(void) {
+    TCCR1A = (1 << COM1A1) | (1 << WGM11);
+    TCCR1B = (1 << WGM13) | (1 << WGM12) | (1 << CS11); // Prescaler 8 for better resolution
+}
+
+// Timer2 initialization for high-speed sampling
+void timer2_init(void) {
+    TCCR2A = (1 << WGM21); // CTC mode
+    TCCR2B = (1 << CS22) | (1 << CS21); // Prescaler 256
+    OCR2A = 124; // ~8kHz sampling rate
+    TIMSK2 = (1 << OCIE2A);
+}
+
+// External interrupt initialization
+void ext_interrupt_init(void) {
+    EICRA = (1 << ISC01) | (1 << ISC00); // Any edge trigger for better detection
+    EIMSK = (1 << INT0);
+}
+
+// GPIO initialization
+void gpio_init(void) {
+    DDRD |= (1 << LASER_PIN);
+    DDRD &= ~(1 << SIGNAL_PIN);
+    PORTD |= (1 << SIGNAL_PIN);
+}
+
+// Set FSK frequency (100Hz, 200Hz, 400Hz)
+void set_fsk_frequency(uint8_t fsk_type) {
+    uint16_t top_value;
+    const char* freq_names[] = {"LOW(100Hz)", "MID(200Hz)", "HIGH(400Hz)", "SYNC(50Hz)", "CONSTANT"};
+    
+    switch(fsk_type) {
+        case 0: // Low frequency (100 Hz)
+            top_value = (16000000UL / (8 * FSK_LOW_FREQ)) - 1;
+            break;
+        case 1: // Mid frequency (200 Hz)
+            top_value = (16000000UL / (8 * FSK_MID_FREQ)) - 1;
+            break;
+        case 2: // High frequency (400 Hz)
+            top_value = (16000000UL / (8 * FSK_HIGH_FREQ)) - 1;
+            break;
+        case 3: // Sync frequency (50 Hz)
+            top_value = (16000000UL / (8 * FSK_SYNC_FREQ)) - 1;
+            break;
+        default:
+            return;
+    }
+    
+    if (top_value > 65535) top_value = 65535;
+    
+    ICR1 = top_value;
+    OCR1A = top_value / 2;
+    
+    if (current_fsk_state != fsk_type && debug_enabled) {
+        uart_print("FSK: ");
+        uart_println(freq_names[fsk_type]);
+    }
+    current_fsk_state = fsk_type;
+}
+
+// Set laser constant ON
+void set_laser_constant(void) {
+    TCCR1A &= ~(1 << COM1A1);
+    PORTD |= (1 << LASER_PIN);
+    synchronized = 0;
+    
+    if (debug_enabled && current_fsk_state != 4) {
+        uart_println("LASER: CONSTANT ON");
+    }
+    current_fsk_state = 4;
+}
+
+// High-speed frequency measurement with improved accuracy
+uint16_t measure_input_frequency(void) {
+    if (pulse_index < 2) return 0;
+    
+    uint32_t total_period = 0;
+    uint8_t valid_measurements = 0;
+    
+    // Use weighted average of recent periods
+    for (uint8_t i = 0; i < 8; i++) {
+        if (recent_periods[i] > 0) {
+            // Give more weight to recent measurements
+            uint8_t weight = (i < 4) ? 2 : 1;
+            total_period += recent_periods[i] * weight;
+            valid_measurements += weight;
+        }
+    }
+    
+    if (valid_measurements == 0) return 0;
+    
+    uint32_t avg_period = total_period / valid_measurements;
+    
+    // Convert period to frequency (period in ms)
+    // Frequency = 1000 / period_ms
+    return 1000 / avg_period;
+}
+
+// Detect FSK symbol from measured frequency (2-bit encoding)
+uint8_t detect_fsk_symbol
