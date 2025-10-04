@@ -20,7 +20,6 @@
 volatile uint32_t pulse_times[8] = {0};
 volatile uint8_t pulse_index = 0;
 volatile uint32_t current_time = 0;      // 1 unit = 1ms
-volatile uint8_t signal_detected = 0;
 volatile uint8_t synchronized = 0;
 volatile uint16_t measured_frequency = 0;
 volatile uint8_t debug_enabled = 1;
@@ -31,7 +30,6 @@ volatile uint8_t receiving_byte = 0;
 volatile uint8_t bit_position = 0;
 volatile uint8_t received_bytes[32];
 volatile uint8_t rx_index = 0;
-volatile uint32_t last_edge_time = 0;
 volatile uint16_t recent_periods[8] = {0};
 volatile uint8_t period_index = 0;
 
@@ -47,7 +45,7 @@ volatile uint8_t current_fsk_state = 0;
 // UART functions for 8MHz
 void uart_init(void) {
     UBRR0H = 0;
-    UBRR0L = 51; // 9600 baud at 8MHz (8MHz/16/9600-1 = 51.08)
+    UBRR0L = 51; // 9600 baud at 8MHz
     UCSR0B = (1 << TXEN0) | (1 << RXEN0);
     UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
 }
@@ -76,27 +74,16 @@ void uart_print_hex(uint8_t num) {
 }
 
 void uart_print_number(uint16_t num) {
-    char buffer[6];
-    uint8_t i = 0;
-    
-    if (num == 0) {
-        uart_putchar('0');
-        return;
-    }
-    
-    while (num > 0) {
-        buffer[i++] = '0' + (num % 10);
-        num /= 10;
-    }
-    
-    while (i > 0) {
-        uart_putchar(buffer[--i]);
-    }
+    if (num >= 10000) uart_putchar('0' + (num / 10000) % 10);
+    if (num >= 1000) uart_putchar('0' + (num / 1000) % 10);
+    if (num >= 100) uart_putchar('0' + (num / 100) % 10);
+    if (num >= 10) uart_putchar('0' + (num / 10) % 10);
+    uart_putchar('0' + num % 10);
 }
 
 // Timer0 initialization for system time (1ms resolution at 8MHz)
 void timer0_init(void) {
-    TCCR0A = (1 << WGM01); // CTC mode
+    TCCR0A = (1 << WGM01); // CTC mode only
     TCCR0B = (1 << CS01) | (1 << CS00); // Prescaler 64
     OCR0A = 124; // 1ms at 8MHz (8000000/64/125 = 1000Hz)
     TIMSK0 = (1 << OCIE0A);
@@ -124,17 +111,16 @@ void gpio_init(void) {
 // Set FSK frequency for 8MHz clock
 void set_fsk_frequency(uint8_t fsk_type) {
     uint16_t top_value;
-    const char* freq_names[] = {"LOW(100Hz)=0", "HIGH(400Hz)=1", "SYNC(50Hz)", "CONSTANT"};
     
     switch(fsk_type) {
         case 0: // Low frequency (100 Hz) - bit 0
-            top_value = (8000000UL / (8 * FSK_LOW_FREQ)) - 1; // 999
+            top_value = (8000000UL / (8 * FSK_LOW_FREQ)) - 1;
             break;
         case 1: // High frequency (400 Hz) - bit 1
-            top_value = (8000000UL / (8 * FSK_HIGH_FREQ)) - 1; // 249
+            top_value = (8000000UL / (8 * FSK_HIGH_FREQ)) - 1;
             break;
         case 2: // Sync frequency (50 Hz)
-            top_value = (8000000UL / (8 * FSK_SYNC_FREQ)) - 1; // 1999
+            top_value = (8000000UL / (8 * FSK_SYNC_FREQ)) - 1;
             break;
         default:
             return;
@@ -145,7 +131,11 @@ void set_fsk_frequency(uint8_t fsk_type) {
     
     if (current_fsk_state != fsk_type && debug_enabled) {
         uart_print("FSK: ");
-        uart_println(freq_names[fsk_type]);
+        switch(fsk_type) {
+            case 0: uart_println("100Hz(0)"); break;
+            case 1: uart_println("400Hz(1)"); break;
+            case 2: uart_println("50Hz(SYNC)"); break;
+        }
     }
     current_fsk_state = fsk_type;
 }
@@ -162,7 +152,7 @@ void set_laser_constant(void) {
     current_fsk_state = 3;
 }
 
-// Measure input signal frequency
+// Measure input signal frequency with overflow protection
 uint16_t measure_input_frequency(void) {
     if (pulse_index < 2) return 0;
     
@@ -176,14 +166,18 @@ uint16_t measure_input_frequency(void) {
         }
     }
     
-    if (valid_measurements == 0) return 0;
+    if (valid_measurements == 0 || total_period == 0) return 0;
     
     uint32_t avg_period = total_period / valid_measurements;
-    return 1000 / avg_period; // Convert period in ms to frequency
+    if (avg_period == 0) return 0;
+    
+    return 1000 / avg_period;
 }
 
 // Detect FSK bit from measured frequency
 uint8_t detect_fsk_bit(uint16_t frequency) {
+    if (frequency == 0) return 3;
+    
     if (frequency > FSK_HIGH_FREQ - 80 && frequency < FSK_HIGH_FREQ + 80) {
         return 1; // High frequency (400Hz) - bit 1
     } else if (frequency > FSK_LOW_FREQ - 30 && frequency < FSK_LOW_FREQ + 30) {
@@ -196,7 +190,7 @@ uint8_t detect_fsk_bit(uint16_t frequency) {
 
 // Start FSK transmission
 void start_fsk_transmission(uint8_t* data, uint8_t length) {
-    if (transmission_active) return;
+    if (transmission_active || length > 32) return;
     
     for (uint8_t i = 0; i < length; i++) {
         transmit_buffer[i] = data[i];
@@ -216,51 +210,57 @@ void start_fsk_transmission(uint8_t* data, uint8_t length) {
     bit_start_time = current_time;
 }
 
-// Process FSK transmission
+// Process FSK transmission with time overflow protection
 void process_fsk_transmission(void) {
     if (!transmission_active) return;
     
-    uint32_t bit_duration = 1000 / BAUD_RATE; // Bit duration in ms
+    uint32_t current_time_safe = current_time;
+    uint32_t bit_duration = 1000 / BAUD_RATE;
     
-    if (current_time - bit_start_time >= bit_duration) {
-        bit_start_time = current_time;
-        
-        if (tx_index == 0) {
-            // Send sync pattern
-            if (current_bit < 16) {
-                set_fsk_frequency(2); // Sync frequency
-                current_bit++;
-            } else {
-                // End of sync, start data
-                tx_index++;
-                current_bit = 0;
-                set_fsk_frequency(0); // Start bit
-            }
-        } else if (tx_index <= tx_length) {
-            if (current_bit == 0) {
-                // Start bit (always 0)
-                set_fsk_frequency(0);
-                current_bit++;
-            } else if (current_bit <= 8) {
-                // Data bits (LSB first)
-                uint8_t bit_value = (transmit_buffer[tx_index-1] >> (current_bit - 1)) & 1;
-                set_fsk_frequency(bit_value);
-                current_bit++;
-            } else {
-                // Stop bit (always 1)
-                set_fsk_frequency(1);
-                tx_index++;
-                current_bit = 0;
-                
-                if (tx_index > tx_length) {
-                    // Transmission complete
-                    transmission_active = 0;
-                    if (debug_enabled) {
-                        uart_println("TX COMPLETE");
-                    }
-                    if (synchronized) {
-                        set_fsk_frequency(2);
-                    }
+    // Handle timer overflow
+    if (current_time_safe >= bit_start_time) {
+        if (current_time_safe - bit_start_time >= bit_duration) {
+            bit_start_time = current_time_safe;
+            process_bit_transmission();
+        }
+    } else {
+        // Timer overflow occurred, reset timing
+        bit_start_time = current_time_safe;
+    }
+}
+
+// Process one bit of transmission
+void process_bit_transmission(void) {
+    if (tx_index == 0) {
+        // Send sync pattern
+        if (current_bit < 16) {
+            set_fsk_frequency(2); // Sync frequency
+            current_bit++;
+        } else {
+            tx_index++;
+            current_bit = 0;
+            set_fsk_frequency(0); // Start bit
+        }
+    } else if (tx_index <= tx_length) {
+        if (current_bit == 0) {
+            set_fsk_frequency(0); // Start bit
+            current_bit++;
+        } else if (current_bit <= 8) {
+            uint8_t bit_value = (transmit_buffer[tx_index-1] >> (current_bit - 1)) & 1;
+            set_fsk_frequency(bit_value);
+            current_bit++;
+        } else {
+            set_fsk_frequency(1); // Stop bit
+            tx_index++;
+            current_bit = 0;
+            
+            if (tx_index > tx_length) {
+                transmission_active = 0;
+                if (debug_enabled) {
+                    uart_println("TX COMPLETE");
+                }
+                if (synchronized) {
+                    set_fsk_frequency(2);
                 }
             }
         }
@@ -272,34 +272,15 @@ void process_received_data(void) {
     if (rx_index >= 3) {
         if (received_bytes[0] == START_BYTE && received_bytes[rx_index-1] == STOP_BYTE) {
             if (debug_enabled) {
-                uart_print("RX DATA: '");
+                uart_print("RX: '");
                 for (uint8_t i = 1; i < rx_index-1; i++) {
-                    if (received_bytes[i] >= 32 && received_bytes[i] <= 126) {
-                        uart_putchar(received_bytes[i]);
-                    } else {
-                        uart_putchar('.');
-                    }
+                    uart_putchar(received_bytes[i]);
                 }
                 uart_println("'");
             }
             
-            // Prepare acknowledgment
-            uint8_t response[32];
-            uint8_t resp_len = 0;
-            response[resp_len++] = START_BYTE;
-            response[resp_len++] = 'O';
-            response[resp_len++] = 'K';
-            response[resp_len++] = STOP_BYTE;
-            
-            start_fsk_transmission(response, resp_len);
-        } else {
-            if (debug_enabled) {
-                uart_print("RX ERROR: Bad frame S=");
-                uart_print_hex(received_bytes[0]);
-                uart_print(" E=");
-                uart_print_hex(received_bytes[rx_index-1]);
-                uart_println("");
-            }
+            uint8_t response[] = {START_BYTE, 'O', 'K', STOP_BYTE};
+            start_fsk_transmission(response, 4);
         }
     }
     rx_index = 0;
@@ -313,8 +294,6 @@ void print_debug_info(void) {
     uart_print_number(synchronized);
     uart_print(" R:");
     uart_print_number(receiving_data);
-    uart_print(" T:");
-    uart_print_number(transmission_active);
     uart_println("");
 }
 
@@ -323,116 +302,128 @@ ISR(TIMER0_COMPA_vect) {
     current_time++;
 }
 
-// External interrupt - signal detection
+// External interrupt - signal detection with overflow protection
 ISR(INT0_vect) {
     uint32_t now = current_time;
     
     if (pulse_index > 0) {
-        uint32_t period = now - pulse_times[pulse_index - 1];
+        uint32_t last_time = pulse_times[pulse_index - 1];
+        uint32_t period;
+        
+        // Handle timer overflow
+        if (now >= last_time) {
+            period = now - last_time;
+        } else {
+            period = (0xFFFFFFFF - last_time) + now + 1;
+        }
         
         if (period >= 2 && period <= 33) { // 30-500Hz range
-            recent_periods[period_index] = period;
+            recent_periods[period_index] = (uint16_t)period;
             period_index = (period_index + 1) % 8;
             
             measured_frequency = 1000 / period;
             
-            // FSK decoding
+            // FSK decoding when synchronized
             if (synchronized && !transmission_active) {
-                uint8_t detected_bit = detect_fsk_bit(measured_frequency);
-                
-                if (detected_bit < 2) {
-                    static uint32_t last_bit_time = 0;
-                    static uint8_t stable_count = 0;
-                    
-                    if (!receiving_data) {
-                        // Wait for stable start bit (0)
-                        if (detected_bit == 0) {
-                            stable_count++;
-                            if (stable_count >= 2) {
-                                receiving_data = 1;
-                                receiving_byte = 0;
-                                bit_position = 0;
-                                last_bit_time = now;
-                                stable_count = 0;
-                            }
-                        } else {
-                            stable_count = 0;
-                        }
-                    } else {
-                        stable_count++;
-                        if (stable_count >= 2) { // Wait for stable bit
-                            uint32_t bit_time = now - last_bit_time;
-                            uint32_t expected_bit_time = 1000 / BAUD_RATE;
-                            
-                            if (bit_time >= expected_bit_time * 0.7) {
-                                if (bit_position < 8) {
-                                    receiving_byte |= (detected_bit << bit_position);
-                                    bit_position++;
-                                } else {
-                                    // Stop bit should be 1
-                                    if (detected_bit == 1 && rx_index < 32) {
-                                        received_bytes[rx_index++] = receiving_byte;
-                                    }
-                                    receiving_data = 0;
-                                }
-                                last_bit_time = now;
-                            }
-                            stable_count = 0;
-                        }
-                    }
-                }
-                else if (detected_bit == 2 && !synchronized) {
-                    synchronized = 1;
-                    if (debug_enabled) {
-                        uart_println("SYNC: Locked!");
-                    }
-                    if (!transmission_active) {
-                        set_fsk_frequency(2);
-                    }
-                }
+                process_fsk_reception(now);
             }
         }
     }
     
     pulse_times[pulse_index] = now;
     pulse_index = (pulse_index + 1) % 8;
-    signal_detected = 1;
+}
+
+// Process FSK reception
+void process_fsk_reception(uint32_t now) {
+    uint8_t detected_bit = detect_fsk_bit(measured_frequency);
+    static uint32_t last_bit_time = 0;
+    static uint8_t stable_count = 0;
+    
+    if (detected_bit < 2) {
+        if (!receiving_data) {
+            if (detected_bit == 0) {
+                stable_count++;
+                if (stable_count >= 2) {
+                    receiving_data = 1;
+                    receiving_byte = 0;
+                    bit_position = 0;
+                    last_bit_time = now;
+                    stable_count = 0;
+                }
+            } else {
+                stable_count = 0;
+            }
+        } else {
+            stable_count++;
+            if (stable_count >= 2) {
+                uint32_t bit_time;
+                
+                // Handle timer overflow for bit timing
+                if (now >= last_bit_time) {
+                    bit_time = now - last_bit_time;
+                } else {
+                    bit_time = (0xFFFFFFFF - last_bit_time) + now + 1;
+                }
+                
+                uint32_t expected_bit_time = 1000 / BAUD_RATE;
+                
+                if (bit_time >= expected_bit_time * 0.7) {
+                    if (bit_position < 8) {
+                        receiving_byte |= (detected_bit << bit_position);
+                        bit_position++;
+                    } else {
+                        if (detected_bit == 1 && rx_index < 32) {
+                            received_bytes[rx_index++] = receiving_byte;
+                        }
+                        receiving_data = 0;
+                    }
+                    last_bit_time = now;
+                }
+                stable_count = 0;
+            }
+        }
+    }
+    else if (detected_bit == 2 && !synchronized) {
+        synchronized = 1;
+        if (debug_enabled) {
+            uart_println("SYNC: Locked!");
+        }
+        if (!transmission_active) {
+            set_fsk_frequency(2);
+        }
+    }
 }
 
 int main(void) {
-    // Initialize all peripherals
     gpio_init();
     uart_init();
     timer0_init();
     timer1_init();
     ext_interrupt_init();
     
-    // Startup message
     uart_println("=== ATmega328P 2-FSK @ 8MHz ===");
-    uart_println("Freq: 50Hz(SYNC), 100Hz(0), 400Hz(1)");
-    uart_println("Baud: 600bps, Clock: 8MHz");
     
     set_laser_constant();
     sei();
     
     uint32_t last_mode_check = 0;
     uint32_t last_debug_out = 0;
-    uint32_t last_freq_update = 0;
     uint32_t last_auto_tx = 0;
     
     uart_println("READY");
     
     while (1) {
-        // Check for synchronization
-        if (current_time - last_mode_check > 300) {
+        uint32_t current_time_safe = current_time;
+        
+        // Mode check
+        if (current_time_safe - last_mode_check > 300) {
             uint16_t freq = measure_input_frequency();
             
-            if (freq == 0) {
-                if (synchronized) {
-                    set_laser_constant();
-                    synchronized = 0;
-                    uart_println("SYNC: Lost");
-                }
+            if (freq == 0 && synchronized) {
+                set_laser_constant();
+                synchronized = 0;
+                uart_println("SYNC: Lost");
             } 
             else if (detect_fsk_bit(freq) == 2 && !synchronized) {
                 synchronized = 1;
@@ -440,7 +431,7 @@ int main(void) {
                 uart_println("SYNC: Acquired");
             }
             
-            last_mode_check = current_time;
+            last_mode_check = current_time_safe;
         }
         
         // Process transmission
@@ -454,22 +445,16 @@ int main(void) {
         }
         
         // Debug output
-        if (debug_enabled && (current_time - last_debug_out > 2000)) {
+        if (debug_enabled && (current_time_safe - last_debug_out > 2000)) {
             print_debug_info();
-            last_debug_out = current_time;
+            last_debug_out = current_time_safe;
         }
         
-        // Auto transmit when synchronized
-        if (synchronized && !transmission_active && (current_time - last_auto_tx > 10000)) {
+        // Auto transmit
+        if (synchronized && !transmission_active && (current_time_safe - last_auto_tx > 10000)) {
             uint8_t data[] = {START_BYTE, '8', 'M', 'H', 'z', '!', STOP_BYTE};
             start_fsk_transmission(data, 7);
-            last_auto_tx = current_time;
-        }
-        
-        // Update frequency display
-        if (current_time - last_freq_update > 200) {
-            measured_frequency = measure_input_frequency();
-            last_freq_update = current_time;
+            last_auto_tx = current_time_safe;
         }
     }
     
